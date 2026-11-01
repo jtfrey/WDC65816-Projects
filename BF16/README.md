@@ -107,3 +107,7 @@ Example:
         ;       0xBF80 + 0xC000 = 0xC040
         ;
 ```
+
+### Example program
+
+The [main.asm](./main.asm) program makes use of the `BF16_ADD` subroutine to sum 40 values from a table and display the results on the 65816 serial console.  See [main.out](./main.out) for the output.
