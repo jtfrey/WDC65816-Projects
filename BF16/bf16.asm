@@ -508,6 +508,8 @@ BF16_ADD_EXPNT_NE_CHKMANT:
                 LSR                             ; …mantissa sum to be.
                 LSR
                 JMP     BF16_ADD_EXPNT_EQ_CHKMANT_PRELOAD
+                .i8
+                .a8
                 
                 
 
