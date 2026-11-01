@@ -499,7 +499,7 @@ BF16_ADD_EXPNT_NE_NO_NEGATE:
                 STA     1, S                    ; Overwrite U.MANT
                 LDA     #$0000                  ; Load the basis for the positive result
 BF16_ADD_EXPNT_NE_CHKMANT:
-                STA     7, S                    ; Overwrite U with the basis value
+                STA     3, S                    ; Overwrite V.MANT with the basis value
                 LDA     1, S                    ; A <= SUM.MANT
                 LSR                             ; Shift the result…
                 LSR                             ; …back down into the range…

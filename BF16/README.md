@@ -90,3 +90,20 @@ Example:
         ;       0x3E4C + 0x3E00 = 0x3EA6
         ;
 ```
+
+Example:
+
+```
+        REP     #$20
+        .a16
+        LDA     #BF16_1 | BF16_SIGN_MASK     ; -1
+        PHA
+        LDA     #BF16_2 | BF16_SIGN_MASK     ; -2
+        PHA
+        JSR     BF16_ADD
+        ;
+        ; On return the accumulator will contain the BF16 value of (-1) + (-2) = -3:
+        ;
+        ;       0xBF80 + 0xC000 = 0xC040
+        ;
+```
