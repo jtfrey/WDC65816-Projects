@@ -75,6 +75,9 @@ BF16_IS_INF_EXIT:
 ; Two 16-bit BF16 values are pushed to the stack and then this
 ; subroutine is called to add them to each other.
 ;
+; On return, the two values will have been removed from the stack
+; and the result is in the accumulator.
+;
 BF16_ADD:
                 .i8
                 .a16
@@ -247,7 +250,7 @@ BF16_ADD_EXPNT_EQ_CHKMANT_PRELOAD:
                 ;
                 ; Shift right one position and adjust exponent:
                 ;
-                CPX     #$FF                    ; Are we already at the max exponent?
+                CPX     #$FE                    ; Are we already at the max exponent?
                 BEQ     BF16_ADD_EXIT_OVERFLOW
                 LSR                             ; We are go to shift right and increment the
                 INX                             ; exponent
@@ -510,8 +513,330 @@ BF16_ADD_EXPNT_NE_CHKMANT:
                 JMP     BF16_ADD_EXPNT_EQ_CHKMANT_PRELOAD
                 .i8
                 .a8
+
+.endproc
+
+.proc BF16_MUL
+
+.define BF16_EXP_ONE_SHIFT $0080
+;
+; BF16_MUL
+; Two 16-bit BF16 values are pushed to the stack and then this
+; subroutine is called to multiply them.
+;
+; On return, the two values will have been removed from the stack
+; and the result is in the accumulator.
+;
+BF16_MUL:
+                .i8
+                .a16
+                ;
+                ; Stack is:
+                ;
+                ;       [S+5]   V
+                ;       [S+3]   U
+                ;       [S+1]   Return addr
+                ;
+                ; 
+                ;
+                LDA     5, S                    ; A <= V
+                PHA                             ; Save V as the start of the sign basis
+                PHA                             ; Stash temporarily while we check V == 0
+                ;
+                ; Stack is:
+                ;
+                ;       [S+9]   V
+                ;       [S+7]   U
+                ;       [S+5]   Return addr
+                ;       [S+3]   Sign basis (V)
+                ;       [S+1]   Copy of V
+                ;
+                ORA     7, S                    ; A <= V | U
+                AND     #$7FFF                  ; A <= (V | U) & $7FFF — ignore sign
+                BNE     BF16_MUL_NOT_00
+BF16_MUL_IS_00:
+                ;
+                ; ±0 * ±0 = 0, period
+                ;
+                PLA                             ; Drop both copies of V…
+                PLA                             ; …we put on the stack…
+                PLA                             ; …and pull the return address…
+                ; Stack is:
+                ;
+                ;       [S+3]   V <--- return address
+                ;       [S+1]   U
+                ;
+                STA     3, S                    ; …putting it where we need it.
+                PLA                             ; Off comes U
+                AND     #$0000                  ; Make the accumulator $0000
+                RTS                             ; And return
+BF16_MUL_NOT_00:
+                PLA                             ; A <= V
+                AND     #BF16_EXP_MASK          ; A <= V.EXP
+                PHA                             ; Save V.EXP as the start of the exponent basis
+                PHA                             ; And as the actual V.EXP
+                ;
+                ; Stack is now:
+                ;       [S+11]  V
+                ;       [S+9]   U
+                ;       [S+7]   Return addr
+                ;       [S+5]   Sign basis (V)
+                ;       [S+3]   Exp basis (V.EXP)
+                ;       [S+1]   V.EXP
+                ;
+                LDA     9, S                    ; A <= U
+                PHA                             ; Stash U temporarily
+                ; +2 on SR offsets
+                EOR     7, S                    ; A <= U ^ Sign basis (V)
+                AND     #BF16_SIGN_MASK         ; Isolate the sign
+                STA     7, S                    ; [S+5] <= sign basis
+                PLA                             ; A <= U
+                ; SR offsets back to normal
+                AND     #BF16_EXP_MASK          ; A <= U.EXP
+                PHA                             ; Save U.EXP
+                ;
+                ; Stack is now:
+                ;       [S+13]  V
+                ;       [S+11]  U
+                ;       [S+9]   Return addr
+                ;       [S+7]   Sign basis (V)
+                ;       [S+5]   Exp basis (V.EXP)
+                ;       [S+3]   V.EXP
+                ;       [S+1]   U.EXP
+                ;
+                ; The exponents are biased by 127, so e.g. a 126 is
+                ; actually a -1 exponent.  The sum of exponents is
+                ; really:
+                ;
+                ;     (U.EXP - 127) + (V.EXP - 127)
+                ;
+                ; Since we need the result to still be biased, we
+                ; add-back:
+                ;
+                ;     (U.EXP - 127) + (V.EXP - 127) + 127
+                ;     = U.EXP + V.EXP - 127
+                ;
+                CLC
+                ADC     3, S                    ; A <= U.EXP + V.EXP
+                SEC
+                SBC     #(127 << BF16_EXP_SHIFT)
+                STA     5, S                    ; Exponent basis is now ready
+                ;
+                ; At this point the only thing we haven't extracted is
+                ; the mantissas.
+                ;
+                LDA     11, S               ; A <= U
+                AND     #BF16_MANT_MASK     ; A <= U & $007F
+                STA     11, S
+                LDA     13, S               ; A <= V
+                AND     #BF16_MANT_MASK     ; A <= V & $007F
+                STA     13, S
+                ;
+                ; It's time we check the special values;
+                ; first let's see if U is special:
+                ;
+                LDA     #BF16_EXP_MASK          ; A <= Exponent mask (max exponent)
+                CMP     1, S                    ; U.EXP == max exponent?
+                BNE     BF16_MUL_U_NOT_SPCL
+                ;
+                ; U is a ±∞ or NaN.
+                ;
+                LDA     11, S                   ; A <= U.MANT
+                BNE     __RB_BF16_MUL_EXIT_NAN  ; U is a NaN, we're done:
                 
-                
+                ;
+                ; U is ±Inf; what's V?
+                ;
+                LDA     3, S                    ; A <= V.EXP
+                CMP     #BF16_EXP_MASK
+                BNE     __RB_BF16_MUL_EXIT_INF  ; V is a norm/denorm number
+                LDA     13, S                   ; A <= V.MANT
+                BNE     __RB_BF16_MUL_EXIT_NAN  ; V is a NaN, we're done
+                BRA     __RB_BF16_MUL_EXIT_INF  ; U is ±∞, V is not a NaN, result is a ±∞
+BF16_MUL_U_NOT_SPCL:
+                ;
+                ; U is a normal value, what about V?
+                ;
+                CMP     3, S                    ; V.EXP == max exponent?
+                BNE     BF16_MUL_NOSPCL
+                ;
+                ; U is normal, V is a special case.  Is V a NaN?
+                ;
+                LDA     13, S                   ; A <= V.MANT
+                BNE     __RB_BF16_MUL_EXIT_NAN  ; V is a NaN, we're done
+                BRA     __RB_BF16_MUL_EXIT_INF  ; V is ±∞, U is not a NaN, result is a ±∞
+BF16_MUL_NOSPCL:
+                ;
+                ; All special cases have been handled.  Get the two
+                ; mantissas prefixed with their implicit digit.  They
+                ; currently are both 0, so we only have to do something
+                ; if the exponent is non-zero.
+                ;
+                LDA     3, S                    ; A <= V.EXP
+                BEQ     BF16_MUL_U_EXP0
+                LDA     #$0080                  ; Set the implicit 1 bit
+                ORA     13, S
+                STA     13, S                   ; V.MANT |= $0080
+BF16_MUL_U_EXP0:LDA     1, S                    ; A <= U.EXP
+                BEQ     BF16_MUL_V_EXP0
+                LDA     #$0080                  ; Set the implicit 1 bit
+                ORA     11, S
+                STA     11, S                   ; U.MANT |= $0080
+                BRA     BF16_MUL_V_MANTCMP
+                ;
+                ; Compare U.MANT with V.MANT to see which one is the smallest value
+                ;
+BF16_MUL_V_EXP0:
+                LDA     11, S
+BF16_MUL_V_MANTCMP:
+                CMP     13, S
+                ;
+                ; If U.MANT < V.MANT, we need to swap them so that the smaller
+                ; value is the one we treat as the multiplier.
+                ;
+                BCS     BF16_MUL_NO_SWAP
+                ;
+                ; V.MANT will be the multiplicand, U.MANT the multiplier.
+                ;
+                PHA
+                ; +2 of SR offsets
+                LDA     15, S                   ; A <= V.MANT
+                STA     5, S                    ; V.EXP replace with multiplicand, V.MANT
+                PLA                             ; A <= U.MANT
+                STA     13, S                   ; V.MANT overwrite with U.MANT
+                BRA     BF16_MUL_LOOP_PRE
+BF16_MUL_NO_SWAP:
+                STA     3, S                    ; V.EXP replace with multiplicand, U.MANT
+BF16_MUL_LOOP_PRE:
+                LDA     #$0000
+                STA     11, S                   ; U.MANT reset to zero as our summing register
+                ;
+                ; Stack is now:
+                ;       [S+13]  Multiplier
+                ;       [S+11]  Summing register
+                ;       [S+9]   Return addr
+                ;       [S+7]   Sign basis (V)
+                ;       [S+5]   Exp basis (V.EXP)
+                ;       [S+3]   Multiplicand
+                ;       [S+1]   U.EXP (trash)
+                ;
+BF16_MUL_LOOP:  LDA     13, S                   ; A <= Multiplier
+                BEQ     BF16_MUL_LOOP_DONE
+                LSR                             ; A <= Multipler >> 1
+                STA     13, S
+                BCC     BF16_MUL_LOOP_NOADD
+                ;
+                ; A 1 fell off the end of the multiplier, add the multiplicand
+                ;
+                LDA     3, S                    ; A <= Multiplicand
+                CLC
+                ADC     11, S                   ; A <= Multiplicand + Sum
+                STA     11, S
+BF16_MUL_LOOP_NOADD:
+                LDA     3, S                    ; A <= Multiplicand
+                ASL                             ; A <= Multiplicand << 1
+                STA     3, S
+                BRA     BF16_MUL_LOOP           ; Next iteration
+;
+; Relative re-branch slots for labels not reachable from above:
+;
+__RB_BF16_MUL_EXIT_NAN:
+                BRA     BF16_MUL_EXIT_NAN
+__RB_BF16_MUL_EXIT_INF:
+                BRA     BF16_MUL_EXIT_INF
+;
+; Continuation with post-multiplication logic and cleanup
+;
+BF16_MUL_LOOP_DONE:
+                ;
+                ; Stack is now:
+                ;       [S+13]  0
+                ;       [S+11]  Product
+                ;       [S+9]   Return addr
+                ;       [S+7]   Sign basis (V)
+                ;       [S+5]   Exp basis (V.EXP)
+                ;       [S+3]   Multiplicand << [1,8]
+                ;       [S+1]   U.EXP (trash)
+                ;
+                ; Is bit 15 set?  If so, we have to adjust the exponent +1
+                ; and shift down:
+                ;
+                LDA     11, S                   ; A <= Product
+                BIT     #$8000                  ; Bit 15 set?
+                BEQ     BF16_MUL_NOEXPPLUS      ; Nope!
+                LSR                             ; A <= Product >> 1
+                STA     11, S
+                LDA     5, S                    ; A <= Exponent basis
+                CLC
+                ADC     #BF16_EXP_ONE_SHIFT     ; Effectively increment exponent by one
+                CMP     #BF16_EXP_MASK
+                BEQ     BF16_MUL_EXIT_INF       ; Overflow exponent-wise
+                STA     5, S
+                BRA     BF16_MUL_IS_ALIGNED
+BF16_MUL_NOEXPPLUS:
+                ;
+                ; We need a 1-bit to occupy bit 14:
+                ;
+                BIT     #$4000                  ; Bit 14 set?
+                BNE     BF16_MUL_IS_ALIGNED     ; Yep!
+                ASL                             ; A <= Product << 1
+                STA     11, S
+                LDA     5, S
+                BEQ     BF16_MUL_EXIT_ZERO      ; Underflow
+                SEC
+                SBC     #BF16_EXP_ONE_SHIFT     ; Effectively decrement exponent by one
+                STA     5, S
+                LDA     11, S                   ; A <= Product
+                BRA     BF16_MUL_NOEXPPLUS
+BF16_MUL_IS_ALIGNED:
+                ; 
+                ; The accumulator holds the result shifted such that the signifcant
+                ; bits occupy:
+                ;
+                ;       0[1|0].PPPPPPPPPPPPPP
+                ;
+                ; The product mantissa is found by:
+                ;
+                ASL                             ; A <= [?PPPPPPP][PPPPPPPP]
+                XBA                             ; A <= [PPPPPPPP][?PPPPPPP]
+                AND     #BF16_MANT_MASK         ; A <= 000000000PPPPPPP
+                ORA     5, S                    ; A <= 0EEEEEEEEPPPPPPP
+                ORA     7, S                    ; A <= SEEEEEEEEPPPPPPP
+                STA     11, S                   ; Save result in exit slot
+BF16_MUL_EXIT:
+                PLA                             ; U.EXP…
+                PLA                             ; …Multiplicand << [1,8]…
+                PLA                             ; …Exp basis (V.EXP)…
+                PLA                             ; …Sign basis (V)…
+                PLA                             ; …Return addr
+                ;
+                ; Stack is now:
+                ;       [S+3]   0
+                ;       [S+1]   Result
+                ;
+                STA     3, S                    ; Return address at top of stack…
+                PLA                             ; A <= Result
+                CMP     #$8000
+                BNE     BF16_MUL_EXIT_NOSUBST
+                LDA     #$0000
+BF16_MUL_EXIT_NOSUBST:
+                RTS                             ; Return to caller!
+BF16_MUL_EXIT_NAN:
+                LDA     #BF16_POS_NAN
+                STA     11, S
+                BRA     BF16_MUL_EXIT
+BF16_MUL_EXIT_INF:
+                LDA     #BF16_POS_INF
+                ORA     7, S
+                STA     11, S
+                BRA     BF16_MUL_EXIT
+BF16_MUL_EXIT_ZERO:
+                LDA     #$0000
+                ORA     7, S
+                STA     11, S
+                BRA     BF16_MUL_EXIT
+
+.endproc
 
 .export BF16_CODE_SIZE = * - BF16_CODE_START
 
@@ -519,6 +844,6 @@ BF16_ADD_EXPNT_NE_CHKMANT:
 .export BF16_IS_NAN
 .export BF16_IS_INF
 .export BF16_ADD
+.export BF16_MUL
 
-.endproc
 

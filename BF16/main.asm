@@ -4,12 +4,16 @@
 .include "bf16.inc"
 
 .import BF16_ADD
+.import BF16_MUL
 
 
 .segment "MAIN"
 
 .define DPAGE_BASE      $2000
 .define STACK_BASE      $7BFF
+
+.define BF16_FN_PTR     $00
+.define BF16_CSTR_PTR   $02
 
 .define FTDI_INIT       $F800
 .define FTDI_WRITE      $F803
@@ -31,14 +35,32 @@ MAIN:       SEI
             SEP     #$30        ; 8-bit X/Y/A
             .a8
             .i8
-            
-            ; Wait for a keypress
-            JSR     FTDI_READ
-            
+
+            JSR     WAIT_KEY
             REP     #$20                    ; 16-bit accumulator
             .a16
             
-            LDX     #0                      ; X will hold the operand 1 index…
+            LDX     #0
+            PHX
+            
+            ;
+            ; Run through the table for BF16_ADD
+            ;
+FN_LOOP:    PLX
+            LDA     FN_NAME_TABLE, X
+            BEQ     EXIT
+            STA     BF16_CSTR_PTR
+            SEP     #$20
+            .a8
+            JSR     PRNTCSTR
+            REP     #$20
+            .a16
+            LDA     FN_PTR_TABLE, X
+            STA     BF16_FN_PTR
+            INX
+            INX
+            PHX
+DO_TABLE:   LDX     #0                      ; X will hold the operand 1 index…
 OUTER_LOOP: LDY     #0                      ; …and Y will hold the operand 2 index
 INNER_LOOP: PHX
             PHY                             ; save X/Y since the BF16_ADD clobbers them
@@ -58,11 +80,47 @@ SUM_DONE:   PLY
             INX                             ; increment X by 2 (words)
             CPX     #80
             BCC     OUTER_LOOP              ; X, < 80, continue outer loop
+            SEP     #$20
+            .a8
             
+            JSR     WAIT_KEY
+            
+            REP     #$20
+            .a16
+            BRA     FN_LOOP
+            
+EXIT:
             SEP     #$20                    ; 8-bit accumulator
             .a8
             STP
+
+FN_PTR_TABLE:
+            .WORD  BF16_ADD
+            .WORD  BF16_MUL
+
+FN_NAME_TABLE:
+            .WORD  BF16_ADD_NAME
+            .WORD  BF16_MUL_NAME
+            .WORD  $0000
+
+BF16_ADD_NAME:
+            .BYTE   $0D,$0A,"Calling BF16_ADD...",$0D,$0A,$0D,$0A,$00
+BF16_MUL_NAME:
+            .BYTE   $0D,$0A,"Calling BF16_MUL...",$0D,$0A,$0D,$0A,$00
+
+WAIT_KEY:   ; Wait for a keypress
+            JSR     FTDI_READ
+            LDA     #'O'
+            JSR     FTDI_WRITE
+            LDA     #'K'
+            JSR     FTDI_WRITE
+            LDA     #$0D
+            JSR     FTDI_WRITE
+            LDA     #$0A
+            JSR     FTDI_WRITE
             
+            RTS
+
 DO_SUM:     .i8
             .a16
             ;
@@ -88,7 +146,9 @@ DO_SUM:     .i8
             
             REP     #$20
             .a16
-            JSR     BF16_ADD
+            PEA     FN_RETURN-1             ; Return address on stack
+            JMP     (DPAGE_BASE + BF16_FN_PTR)
+FN_RETURN:
             SEP     #$20
             .a8
             JSR     PRNTWORD
@@ -104,6 +164,17 @@ DO_SUM:     .i8
             RTS
             .i8
             .a8
+
+PRNTCSTR:   LDY     #0
+PRNTCSTR_LOOP:
+            LDA     (BF16_CSTR_PTR), Y
+            BEQ     PRNTCSTR_EXIT
+            JSR     FTDI_WRITE
+            INY
+            BRA     PRNTCSTR_LOOP
+PRNTCSTR_EXIT:
+            RTS
+
 
 PRNTWORD:   XBA                             ; Swap the MSB to the LSB
             PHA

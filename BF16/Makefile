@@ -6,7 +6,7 @@ AS	= ca65
 ASFLAGS	= --verbose --listing $*.sym
 
 LD	= ld65
-LDFLAGS	= -v -C bf16.cfg -D __OBJ_ADDR__=0x500
+LDFLAGS	= -v -C bf16.cfg -D __OBJ_ADDR__=0x2100
 
 #
 # Explicit rules:
