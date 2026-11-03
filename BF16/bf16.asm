@@ -256,16 +256,23 @@ BF16_ADD_EXPNT_EQ_CHKMANT_PRELOAD:
                 INX                             ; exponent
                 BRA     BF16_ADD_EXPNT_EQ_SETMANT
 BF16_ADD_EXPNT_EQ_LSHFT:
+                CPX     #0                      ; Denormalized to start?  Skip the left shift
+                BNE     BF16_ADD_EXPNT_EQ_LSHFT_LOOP
+                BIT     #$0080                  ; If bit 7 _is_ set, then we're no longer
+                BEQ     BF16_ADD_EXPNT_EQ_SETMANT ; denormalized
+                INX                             ; Increase exponent to 1 (explicit -126)
+                BRA     BF16_ADD_EXPNT_EQ_SETMANT
+BF16_ADD_EXPNT_EQ_LSHFT_LOOP:
                 ;
                 ; No right shift was necessary, but now we need to left-shift the result
                 ; until bit 7 is occupied by a 1 OR the exponent reaches zero.
                 ;
                 BIT     #$0080
                 BNE     BF16_ADD_EXPNT_EQ_SETMANT
-                CPX     #0
+                DEX                             ; Drop the exponent now; if it goes to zero
+                                                ; then skip the shift
                 BEQ     BF16_ADD_EXPNT_EQ_SETMANT
-                ASL                             ; We are go to shift left and decrement the
-                DEX                             ; exponent
+                ASL                             ; We are go to shift left
                 BNE     BF16_ADD_EXPNT_EQ_LSHFT ; Go check again if the exponent hasn't reached 0
 BF16_ADD_EXPNT_EQ_SETMANT:
                 ;
@@ -381,20 +388,20 @@ BF16_ADD_EXPNT_NE_VZERO:
                 ; For the sake of simplicity (haha) we want to shift U.MANT as
                 ; high as we can in the 16-bit register:
                 ;
-                ;         000000001MMMMMMM => 001MMMMMMM000000
+                ;         000000001MMMMMMM => 01MMMMMMM0000000
                 ;
                 ; This means the V will have to be shifted either left or right or
-                ; not at all as indicated by (6 - |∆EXP|).
+                ; not at all as indicated by (7 - |∆EXP|).
                 ;
                 ; The mantissas are 8-bit (7 explicit + 1 implied) so any V.MANT
                 ; shift in excess of -7 will zero V.MANT completely:
                 ;
-                ;         (6 - |∆EXP|) < -8
-                ;         -|∆EXP| < -14
-                ;         |∆EXP| ≥ 14
+                ;         (7 - |∆EXP|) < -8
+                ;         -|∆EXP| < -15
+                ;         |∆EXP| ≥ 15
                 ;
-                CMP     #14
-                BCC     BF16_ADD_EXPNT_NE_CHKSHFT ; |∆EXP| < 14
+                CMP     #15
+                BCC     BF16_ADD_EXPNT_NE_CHKSHFT ; |∆EXP| < 15
                 PLA
                 BRA     BF16_ADD_EXIT_SPCL_U    ; Exponents differ by too much, U + V = U
 BF16_ADD_EXPNT_NE_CHKSHFT:
@@ -402,7 +409,7 @@ BF16_ADD_EXPNT_NE_CHKSHFT:
                 ; Calculate the shift we need to apply to V.MANT:
                 ;
                 SEC
-                SBC     #6                      ; A <= |∆EXP| - 6
+                SBC     #7                      ; A <= |∆EXP| - 7
                 XBA                             ; Swap the order so that when we pull
                                                 ; off the stack as 2 x 8-bit values the
                                                 ; LSB will come off second
@@ -462,16 +469,12 @@ BF16_ADD_EXPNT_NE_VNONEG:
                 ; We're looking to shift U.MANT left 6-bits such that:
                 ;
                 ;         000000001MMMMMMM
-                ;         001MMMMMMM000000
+                ;         01MMMMMMM0000000
                 ;
                 LDA     1, S                    ; A <= U.MANT
                 ORA     #$0080                  ; A <= U.MANT | 0b10000000 (implied 1)
-                ASL                             ; Shift left 1 bit…
-                ASL                             ; …and another bit…
-                ASL                             ; …and another bit…
-                ASL                             ; …and another bit…
-                ASL                             ; …and another bit…
-                ASL                             ; …and one more bit.
+                XBA                             ; A <= [1MMMMMMM][00000000]
+                LSR                             ; A <= 01MMMMMMM0000000
                 STA     1, S                    ; Overwrite U.MANT on the stack
                 ;
                 ; Does U.MANT need to be negated?
@@ -492,8 +495,9 @@ BF16_ADD_EXPNT_NE_UNONEG:
                 ADC     3, S                    ; A <= U.MANT + V.MANT
                 STA     7, S                    ; Drop the result into the U slot on the stack
                 BEQ     __NE_BF16_ADD_EXIT_SPCL_U ; If the result is zero, we have our answer
-                BPL     BF16_ADD_EXPNT_NE_NO_NEGATE
-                EOR     #$FFFF                  ; Negate the result since we only store the
+                BVC     BF16_ADD_EXPNT_NE_NO_NEGATE ; if overflow occurred…
+                BCC     BF16_ADD_EXPNT_NE_NO_NEGATE ; …AND there was a 1 carried out on overflow…
+                EOR     #$FFFF                  ; …then negate the result since we only store the
                 INC                             ; magnitude of the mantissa
                 STA     1, S                    ; Overwrite U.MANT
                 LDA     #BF16_SIGN_MASK         ; Load the basis for the negative result
@@ -503,13 +507,12 @@ BF16_ADD_EXPNT_NE_NO_NEGATE:
                 LDA     #$0000                  ; Load the basis for the positive result
 BF16_ADD_EXPNT_NE_CHKMANT:
                 STA     3, S                    ; Overwrite V.MANT with the basis value
-                LDA     1, S                    ; A <= SUM.MANT
-                LSR                             ; Shift the result…
-                LSR                             ; …back down into the range…
-                LSR                             ; …where the equal exponent…
-                LSR                             ; …finalization expects the…
-                LSR                             ; …mantissa sum to be.
-                LSR
+                LDA     1, S                    ; A <= SUM.MANT = [FE.DCBA98][76543210]
+                XBA                             ; A <= [76543210][FE.DCBA98]
+                CLC                             ; Don't shift anything into A
+                ROL                             ; A <= [6543210F][E.DCBA980] 7=>C
+                ADC     #0                      ; A <= [6543210F][E.DCBA987]
+                AND     #$01FF                  ; Keep just the significand
                 JMP     BF16_ADD_EXPNT_EQ_CHKMANT_PRELOAD
                 .i8
                 .a8
@@ -779,15 +782,17 @@ BF16_MUL_NOEXPPLUS:
                 ;
                 BIT     #$4000                  ; Bit 14 set?
                 BNE     BF16_MUL_IS_ALIGNED     ; Yep!
+                LDA     5, S                    ; A <= Exponent
+                SEC
+                SBC     #BF16_EXP_ONE_SHIFT     ; A <= Exponent - 1
+                STA     5, S
+                BEQ     BF16_MUL_NOEXPPLUS_CLEANUP
+                LDA     11, S
                 ASL                             ; A <= Product << 1
                 STA     11, S
-                LDA     5, S
-                BEQ     BF16_MUL_EXIT_ZERO      ; Underflow
-                SEC
-                SBC     #BF16_EXP_ONE_SHIFT     ; Effectively decrement exponent by one
-                STA     5, S
-                LDA     11, S                   ; A <= Product
                 BRA     BF16_MUL_NOEXPPLUS
+BF16_MUL_NOEXPPLUS_CLEANUP:
+                LDA     11, S
 BF16_MUL_IS_ALIGNED:
                 ; 
                 ; The accumulator holds the result shifted such that the signifcant
