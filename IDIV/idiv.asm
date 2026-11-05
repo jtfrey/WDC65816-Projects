@@ -183,7 +183,11 @@ SIDIV16_LOOP:   LDA     7, S                        ; A <= dividend
                 SEC
                 SBC     1, S                        ; dividend -= divisor
                 STA     7, S                        ; write updated dividend back to stack
-                SEC
+                ;
+                ; Since the divisor is guaranteed to be ≤ the dividend, after
+                ; SBC the [C]arry flag will still be set — which is what we want
+                ; to shift into the quotient (!)
+                ;
 SIDIV16_NXT:    ;
                 ; Getting here via branch means [C] is clear; via the
                 ; dividend update [C] is set.  So we can ROL the [C]arry
@@ -263,7 +267,11 @@ DIDIV16_LOOP:   CMP     MATH16_SCR2                 ; dividend CMP shifted divis
                 BCC     DIDIV16_NXT                 ; dividend < divisor
                 SEC
                 SBC     MATH16_SCR2                 ; A <= dividend - divisor
-                SEC                                 ; set [C]arry for quotient update
+                ;
+                ; Since MATH16_SCR2 is guaranteed to be ≤ the dividend, after
+                ; SBC the [C]arry flag will still be set — which is what we want
+                ; to shift into the quotient (!)
+                ;
 DIDIV16_NXT:    ;
                 ; Getting here via branch means [C] is clear; via the
                 ; dividend update [C] is set.  So we can ROL the [C]arry
