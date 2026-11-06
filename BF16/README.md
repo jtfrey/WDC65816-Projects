@@ -2,7 +2,7 @@
 
 The WDC 65816 is a descendent of the 6502 and 65C02 microprocessor that expands the three registers (X/Y/A) to 16-bits.  The arithmetic and logic instructions — add/subtract/increment/decrement, and/or/xor, bit test and shift — modally-function in either 8-bit or 16-bit.  With a native 16-bit accumulator, a 16-bit floating-point type is more easily implemented.
 
-The [bf16.asm](./bf16.asm) file contains the 65816 source that implements numeric introspection subroutines and an addition subroutine.  All are expected to be called in native mode with the accumulator in 16-bit mode.  The [bf16.inc](./bf16.inc) file contains constant definitions.
+The [bf16.asm](./bf16.asm) file contains the 65816 source that implements numeric introspection subroutines and addition and multiplication subroutines.  All are expected to be called in native mode with the accumulator in 16-bit mode.  The [bf16.inc](./bf16.inc) file contains constant definitions.
 
 
 
